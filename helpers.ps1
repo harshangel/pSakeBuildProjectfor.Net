@@ -38,3 +38,28 @@ function Prepare-Tests
 
 	return $testAssemblies
 }
+
+function Update-XmlParameters{
+	[CmdletBinding()]
+	param(
+		[Parameter(Position=0, Mandatory=1)]$xmlFile,
+		[Parameter(Position=1, Mandatory=1)]$parameterName,
+		[Parameter(Position=2, Mandatory=1)]$value
+	)
+
+	Write-Host "file = $xmlFile"
+	Write-Host "name = $parameterName"
+	Write-Host "value = $value"
+	$xmlContent = [xml](Get-Content $xmlFile)
+
+	Write-Host "Pint 17"
+	Write-Host $xmlContent.GetElementsByTagName("supportedRuntime")
+	Write-Host "Pint 18"
+
+	$node = $xmlContent.parameters.setParameter | where {$_.name -eq $parameterName}
+	Write-Host "Pint 19"
+	Write-Host $node
+
+	$node.value = $value
+	$xmlContent.Save($xmlFile)
+}

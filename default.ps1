@@ -1,5 +1,10 @@
 ﻿Include ".\helpers.ps1"
+Include ".\teamcity.ps1"
 properties {
+	$base_dir = resolve-path .\..
+	$settingsDirectory = "$base_dir\Build\Settings"
+	. $settingsDirectory\$env.ps1
+	$build_artifacts_dir = "$base_dir\build_artifacts"
 	$testMessage = "Executed Test!!"
 	$solutionDirectory = (Get-Item $solutionFile).DirectoryName
 	$outputDirectory= "$solutionDirectory\.build"
@@ -10,8 +15,8 @@ properties {
 	$buildPlatform = "Any CPU"
 	$vsTestExe = (Get-ChildItem ("C:\Program Files (x86)\Microsoft Visual Studio*\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe")).FullName | Sort-Object $_ | select -last 1
 	#$msTestExe =  (Get-ChildItem ("C:\Program Files*\Microsoft Visual Studio*\Common7\IDE\MSTest.exe")).FullName | Sort-Object $_ | select -last 1
-	$dbUpExecutableName = "SchemaMigration.exe"
-	$DBConnectionString = "Data Source=.\SQLEXPRESS;Integrated Security=True;Initial Catalog=Connection"
+	$dbUpExecutable = "$temporaryOutputDirectory\SchemaMigration.exe"
+	$databaseScriptsDirectory = "CI\Updates"
 }
 FormatTaskName "`r`n`r`n------- Executing {0} Task --------"
 
@@ -46,11 +51,17 @@ task Compile -depends Init `
 	}
 }
 
-task Test -depends Compile ,databaseMigration, TestMSTest{
+task UpdateConfig -depends Compile -description "Updates config files after compile"{
+	#Update database path in web.config and app.config
+	Get-ChildItem("$temporaryOutputDirectory\*.dll.config") | ForEach-Object {Update-XmlParameters `
+		-xmlFile $_.FullName -parameter}
+}
+
+task Test -depends Compile,CreateBuildNumberFile, TestMSTest, Init{
 	Write-Host $testMessage
 }
 
-task TestMSTest -depends Compile -description "Run MSTest test" `
+task TestMSTest -depends Compile, Init -description "Run MSTest test" `
 	-precondition {return Test-Path $temporaryOutputDirectory} {
 		$testdlls = (Get-ChildItem($temporaryOutputDirectory+"\"+"*.tests.dll")).FullName
 		$testAssemblies = [string]::Join(" ",$testdlls)
@@ -67,9 +78,31 @@ task TestMSTest -depends Compile -description "Run MSTest test" `
 		Remove-Item $MSTestResultsDirectory\TestResults
 }
 
-task databaseMigration -depends Compile -description "Run Dbup based Schema Migration" {
+task databaseMigration  -depends initDeploy -description "Run Dbup based Schema Migration" `
+-requiredVariables env, dbUpExecutable, databaseScriptsDirectory {
 	Write-Host "Running database Migration"
-	$migrationExe = (Get-ChildItem($temporaryOutputDirectory+"\"+$dbUpExecutableName))
-	Assert (Test-Path $migrationExe) "Db Exe missing at $migrationExe"
-	Exec { &$migrationExe $DBConnectionString /CreateDatabaseIfMissing}
+		Write-Output "&$dbUpExecutable $db_Connectionstring $databaseScriptsDirectory /CreateDatabaseIfMissing" 
+		Exec { &$dbUpExecutable "$db_Connectionstring" "$databaseScriptsDirectory" /CreateDatabaseIfMissing }
+}
+
+task deploy -depends initDeploy, SetDeployBuildNumber, databaseMigration{
+	Write-Output "Starting Deploy task" 
+	Write-Output "env =" $env
+}
+
+task initDeploy -description "Initialized the deploy steps" `
+	-requiredVariables env , databaseScriptsDirectory{
+	Assert (Test-Path $settingsDirectory\$env.ps1) "enviromental Setting files not found."
+	Assert (Test-Path "$build_artifacts_dir\build.number") "Build Number file not found"
+	Assert (Test-Path $dbUpExecutable) "Dbup executable not found at $dbUpExecutable"
+	#Assert (Test-Path $databaseScriptsDirectory) "Database scripts not found at $databaseScriptsDirectory"
+}
+
+task CreateBuildNumberFile{
+	"$env:build_number" | Out-File "$temporaryOutputDirectory\build.number" -Encoding ascii -Force
+}
+task SetDeployBuildNumber {
+	$Script:build_no = Get-Content "$build_artifacts_dir\build.number"
+	TeamCity-SetBuildNumber $Script:build_no
+	Write-Output "Setting build number to "$Script:build_no
 }
